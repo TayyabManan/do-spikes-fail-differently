@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.vscode/
+
+# demo: model weights and the 33-sample bank live on the Modal volume, not in git
+results/checkpoints/
+results/data/demo_bank.npz
+
+# local secrets, if any ever appear here
+.env*

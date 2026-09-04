@@ -1,0 +1,17 @@
+# Load-bearing pins. Do not upgrade without testing.
+# The Modal images pin these same versions for GPU runs.
+torch==2.4.0
+torchvision==0.19.0
+spikingjelly==0.0.0.0.14
+numpy<2
+
+# local analysis and figures
+matplotlib
+
+# remote training / evaluation
+modal
+
+# live demo, local server only (the Modal image pins its own)
+fastapi
+uvicorn
+pillow
