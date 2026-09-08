@@ -22,7 +22,6 @@ Models for Open-Vocabulary Recognition".
   each live run.
 - Project page: [tayyabmanan.com/projects/do-spikes-fail-differently](https://tayyabmanan.com/projects/do-spikes-fail-differently).
 - Write-up: [tayyabmanan.com/blog/do-spikes-fail-differently-snn-vs-ann](https://tayyabmanan.com/blog/do-spikes-fail-differently-snn-vs-ann).
-- Report: `report/step8_report.pdf`.
 
 ## Findings
 
@@ -67,7 +66,6 @@ scripts/            numbered pipeline, step1 to step9
 results/
   data/             npz output dumps and training metrics csv
   figures/          all generated figures
-report/             writeup
 ```
 
 ## Reproducing
