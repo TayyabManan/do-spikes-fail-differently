@@ -1,0 +1,17 @@
+layer       MACs/frame  input rate    SNN uJ    ANN uJ
+conv1       37,748,736      analog  2778.307  2778.307
+conv2      603,979,776      0.0425   369.499 44452.912
+conv3      150,994,944      0.0465   101.091 11113.228
+conv4       37,748,736      0.0658    35.759  2778.307
+conv5        9,437,184      0.1053    14.316   694.577
+fc1          1,048,576      0.2045     3.088    77.175
+fc2             56,320      0.3313     0.269     4.145
+-------------------------------------------------------
+TOTAL                               3302.328 61898.650
+
+SNN / ANN energy ratio: 0.053 (18.7x saving)
+mean LIF firing rates, layer order: 0.018 0.020 0.026 0.036 0.071 0.331 0.090
+post-pool spike densities, pool order: 0.042 0.046 0.066 0.105 0.204
+overall spike sparsity: 98.1% of neuron-timesteps are silent (per neuron-timestep, weighted)
+input frame density (nonzero mass per cell): 0.7829
+note: conv1 counted at full MAC cost for the SNN (conservative); E_MAC=4.6pJ E_AC=0.9pJ (Horowitz 2014, 45nm)
