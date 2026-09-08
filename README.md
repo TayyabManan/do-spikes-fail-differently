@@ -12,6 +12,18 @@ Semester project. Miniature of the master's thesis "Do Spikes Fail
 Differently? Reliability of Parameter-Efficient Spiking Event-Language
 Models for Open-Vocabulary Recognition".
 
+## Live demo and write-up
+
+- Live demo: [tayyabmanan.com/demo/spikes](https://tayyabmanan.com/demo/spikes).
+  Pick a test recording, damage it, and watch both trained models answer
+  the same damaged input. It runs the checkpoints from this repo on Modal
+  through `scripts/step9_demo_api.py`, with the step 6 corruptions and the
+  step 7 energy accounting unchanged, and shows the published curves under
+  each live run.
+- Project page: [tayyabmanan.com/projects/do-spikes-fail-differently](https://tayyabmanan.com/projects/do-spikes-fail-differently).
+- Write-up: [tayyabmanan.com/blog/do-spikes-fail-differently-snn-vs-ann](https://tayyabmanan.com/blog/do-spikes-fail-differently-snn-vs-ann).
+- Report: `report/step8_report.pdf`.
+
 ## Findings
 
 All numbers on the 288-sample test set with bootstrap 95% CIs, single
@@ -21,9 +33,9 @@ seed.
 |---|---|
 | Accuracy | SNN 0.9306 vs ANN 0.9653. Gap +0.035 [+0.010, +0.063], McNemar p = 0.021. Real, but 3.5 points = 10 samples. |
 | Calibration (clean) | SNN ECE 0.040 vs ANN ECE 0.039. Paired difference CI includes zero. No measurable calibration cost. |
-| Noise corruption | Curves cross. SNN leads by up to +0.28 accuracy. ANN grows overconfident (conf - acc up to +0.33); SNN confidence tracks its accuracy. |
+| Noise corruption | Curves cross. SNN leads by up to +0.28 accuracy. ANN grows overconfident (conf - acc up to +0.34); SNN confidence tracks its accuracy within 4 points. |
 | Drop / occlusion | ANN keeps its lead. At extreme event loss both degrade to 0.368 (SNN) and 0.424 (ANN) against chance 0.091, while ~77-81% confident. |
-| Temporal shuffle | ANN provably invariant (verified flat). SNN loses ~3 points at full shuffle. It uses timing, worth a few points. |
+| Temporal shuffle | ANN provably invariant (verified flat). SNN loses 0.021 [0.007, 0.038] at full shuffle. It uses timing, worth about two points. |
 | Energy (accounting model) | SNN 3.30 mJ/sample vs ANN 61.90 mJ/sample, 18.7x. 98.1% of neuron-timesteps silent (weighted). |
 
 One line: spiking here is a trade, not a downgrade. It costs 3.5
@@ -38,7 +50,7 @@ temporal low-pass filter) is a hypothesis, not a demonstrated cause.
 ## Repository layout
 
 ```
-scripts/            numbered pipeline, step1 to step7
+scripts/            numbered pipeline, step1 to step9
   step1_lif.py            hand-rolled LIF neuron, teaching script (local)
   step2_surrogate.py      surrogate gradients, 3 shapes x 5 seeds (local)
   step3_train_dvs.py      SNN training (Modal, GPU)
@@ -48,6 +60,8 @@ scripts/            numbered pipeline, step1 to step7
   step6_corruption.py     corruption stress test dump (Modal, GPU)
   step6_analysis.py       corruption curves + CIs (local)
   step7_energy.py         firing rates + energy table (Modal, GPU)
+  step8_training_curves.py  training curves figure from both metrics csv (local)
+  viz_dataset.py          dataset grid and animated gestures figures (local)
   step9_demo_api.py       live demo backend (Modal, CPU, scales to zero) + local server
   step9_demo_export.py    published numbers -> the portfolio's demo data module (local)
 results/
