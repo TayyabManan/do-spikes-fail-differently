@@ -17,10 +17,22 @@ One-time setup:
 
 Then (from the repo root):
   modal run scripts/step3_train_dvs.py --mode prepare   # CPU, once, ~30-60 min
-  modal run --detach scripts/step3_train_dvs.py         # GPU, resumable
+  modal run --detach scripts/step3_train_dvs.py         # GPU, resumable, seed 0
+  modal run --detach scripts/step3_train_dvs.py --seed 1   # any other seed
+
+Seeds and checkpoints:
+  seed 0 keeps the original layout: /checkpoints/{last,best}.pt, metrics.csv.
+  seed S > 0 writes the same files to /checkpoints/seedS/.
+  The seed controls init, shuffling and dropout (torch, numpy, random).
+  cuDNN autotuning stays nondeterministic, so two runs of one seed are
+  close but not bit-identical.
+  best.pt is still written (highest test accuracy so far, ties -> latest),
+  but it is selected ON THE TEST SET. Steps 5-7 evaluate last.pt, the
+  fixed-budget epoch-64 checkpoint, by default. Do not report best.pt.
 
 Watch progress in the Modal dashboard, or fetch results later:
-  modal volume get dvs128-data /checkpoints/metrics.csv results/data/step3_metrics.csv
+  modal volume get dvs128-data /checkpoints/metrics.csv results/data/seed0/step3_metrics.csv
+  modal volume get dvs128-data /checkpoints/seed1/metrics.csv results/data/seed1/step3_metrics.csv
 """
 
 import modal
@@ -31,6 +43,12 @@ vol = modal.Volume.from_name("dvs128-data", create_if_missing=True)
 DATA = "/data"
 ROOT = f"{DATA}/DVS128Gesture"      # must contain download/DvsGesture.tar.gz etc.
 CKPT = f"{DATA}/checkpoints"
+
+
+def ckpt_dir(seed: int) -> str:
+    """seed 0 keeps the original folder; other seeds get a subfolder."""
+    return CKPT if seed == 0 else f"{CKPT}/seed{seed}"
+
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "torch==2.4.0",
@@ -92,9 +110,14 @@ def build_net():
 
 
 @app.function(image=image, gpu="A10G", volumes={DATA: vol}, timeout=6 * 3600)
-def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 16):
+def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 16,
+                 seed: int = 0):
+    import json
     import os
+    import random
+    import time
 
+    import numpy as np
     import torch
     import torch.nn.functional as F
     from spikingjelly.activation_based import functional
@@ -102,7 +125,10 @@ def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 1
     from torch.utils.data import DataLoader
 
     device = "cuda"
-    torch.manual_seed(0)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    run_dir = ckpt_dir(seed)
 
     def make_loader(is_train):
         ds = DVS128Gesture(ROOT, train=is_train, data_type="frame",
@@ -118,8 +144,12 @@ def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 1
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
 
     # ---- resume if a checkpoint exists ----
-    os.makedirs(CKPT, exist_ok=True)
-    last, best_path = f"{CKPT}/last.pt", f"{CKPT}/best.pt"
+    os.makedirs(run_dir, exist_ok=True)
+    with open(f"{run_dir}/run.json", "w") as f:
+        json.dump({"model": "snn", "seed": seed, "epochs": epochs,
+                   "batch": batch, "lr": lr, "T": T, "loss": "mse_onehot",
+                   "optimizer": "adam", "schedule": "cosine"}, f, indent=1)
+    last, best_path = f"{run_dir}/last.pt", f"{run_dir}/best.pt"
     start_epoch, best_acc = 0, 0.0
     if os.path.exists(last):
         ck = torch.load(last, map_location=device)
@@ -149,36 +179,40 @@ def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 1
                 loss_sum += loss.item() * label.numel()
         return loss_sum / total, correct / total
 
-    metrics_path = f"{CKPT}/metrics.csv"
+    metrics_path = f"{run_dir}/metrics.csv"
     if not os.path.exists(metrics_path):
         with open(metrics_path, "w") as f:
-            f.write("epoch,train_loss,train_acc,test_loss,test_acc\n")
+            f.write("epoch,train_loss,train_acc,test_loss,test_acc,epoch_time_s\n")
 
+    te_acc = float("nan")                  # stays nan if the run was already complete
     for epoch in range(start_epoch, epochs):
+        t0 = time.time()
         tr_loss, tr_acc = run_epoch(train_loader, True)
         te_loss, te_acc = run_epoch(test_loader, False)
         sched.step()
+        epoch_time = time.time() - t0
         best_acc = max(best_acc, te_acc)
         print(f"epoch {epoch:3d}  train {tr_acc:.4f}  test {te_acc:.4f}"
               f"  best {best_acc:.4f}")
 
         with open(metrics_path, "a") as f:
             f.write(f"{epoch},{tr_loss:.4f},{tr_acc:.4f},"
-                    f"{te_loss:.4f},{te_acc:.4f}\n")
+                    f"{te_loss:.4f},{te_acc:.4f},{epoch_time:.1f}\n")
         state = {"net": net.state_dict(), "opt": opt.state_dict(),
                  "sched": sched.state_dict(), "epoch": epoch,
                  "best_acc": best_acc}
         torch.save(state, last)
-        if te_acc >= best_acc:
+        if te_acc >= best_acc:             # test-selected: kept for reference only
             torch.save(state, best_path)
         vol.commit()                             # persist every epoch
 
-    print(f"done. best test acc {best_acc:.4f}")
+    print(f"done. seed {seed}: last-epoch test acc {te_acc:.4f} (report this), "
+          f"best test acc {best_acc:.4f} (test-selected, do not report)")
 
 
 @app.local_entrypoint()
-def main(mode: str = "train", epochs: int = 64):
+def main(mode: str = "train", epochs: int = 64, seed: int = 0):
     if mode == "prepare":
         prepare.remote()
     else:
-        train_remote.remote(epochs=epochs)
+        train_remote.remote(epochs=epochs, seed=seed)

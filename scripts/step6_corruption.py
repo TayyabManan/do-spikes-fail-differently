@@ -1,15 +1,17 @@
 """Step 6, part 1 (GPU): corruption stress test, dump outputs.
 
-Runs the full test set through BOTH best checkpoints under four
-event-camera corruptions at four severities each, plus clean.
-33 test passes total, a few minutes on the A10G.
+Runs the full test set through BOTH models under four event-camera
+corruptions at four severities each, plus clean. 33 test passes total,
+a few minutes on the A10G.
 
 Corruptions, applied to the frame tensor [B, T, 2, 128, 128]:
   drop     binomial thinning: each event survives with prob 1-p.
            Models a failing / desensitized sensor. p in {.2 .4 .6 .8}
   noise    add Poisson background events everywhere, rate lam per
-           pixel-bin-polarity. Models hot pixels and BA noise.
-           lam in {.05 .1 .2 .5}
+           pixel-bin-polarity, drawn independently per frame. Models
+           background-activity noise. lam in {.05 .1 .2 .5}
+           (step6b_noise_sweep.py varies the temporal correlation of
+           this noise to test the leak hypothesis)
   occlude  zero a random square of side s (same square across T).
            Models partial blockage. s in {24 40 56 72}
   tshuffle permute the T axis within windows of size w. w in {2 4 8 16}.
@@ -19,18 +21,29 @@ Corruptions, applied to the frame tensor [B, T, 2, 128, 128]:
            stays flat, it never used timing either.
 
 All corruptions are seeded with fixed per-corruption offsets, so both
-models see identical corrupted inputs AND reruns are reproducible.
+models see identical corrupted inputs AND reruns are reproducible. The
+corruption seeds do not depend on the training seed: every seed's models
+see byte-identical corrupted test sets.
 (An earlier version seeded with hash(kind), which Python randomizes
-per process: the archived corruption_outputs.npz predates this fix.
-Its within-run SNN/ANN pairing was valid, but its exact numbers are
-not re-derivable.)
-Output: /eval/corruption_outputs.npz with key "{model}_{corr}_{sev_idx}"
-per condition, plus "labels" and severity metadata.
+per process: results/data/archive/ keeps that run. Its within-run
+SNN/ANN pairing was valid, but its exact numbers are not re-derivable.)
+
+Checkpoints: last.pt by default (fixed-budget epoch 64), best.pt on
+request for the appendix only. Layout as in step 5: seed 0 in
+/checkpoints and /checkpoints_ann, seed S > 0 in the seedS subfolders.
+
+Output: /eval/seed{S}/corruption_outputs.npz (or corruption_outputs_best.npz)
+with key "{model}_{corr}_{sev_idx}" per condition, plus "labels",
+severity metadata and provenance scalars (seed, ckpt, snn_epoch, ann_epoch).
 
 Run:
-  modal run scripts/step6_corruption.py
+  modal run scripts/step6_corruption.py --seed 0
+  modal run scripts/step6_corruption.py --seed 1
 Fetch:
-  modal volume get dvs128-data /eval/corruption_outputs.npz results/data/corruption_outputs.npz
+  modal volume get dvs128-data /eval/seed0/corruption_outputs.npz results/data/seed0/corruption_outputs.npz
+
+The original single-seed dump (/eval/corruption_outputs.npz, best.pt)
+is left untouched. The live demo's published curves come from it.
 """
 
 import modal
@@ -40,6 +53,8 @@ app = modal.App("dvs128-corrupt")
 vol = modal.Volume.from_name("dvs128-data", create_if_missing=True)
 DATA = "/data"
 ROOT = f"{DATA}/DVS128Gesture"
+CKPT_SNN = f"{DATA}/checkpoints"
+CKPT_ANN = f"{DATA}/checkpoints_ann"
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "torch==2.4.0",
@@ -48,6 +63,18 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install(
     "numpy<2",
     "tqdm",
 )
+
+
+def ckpt_dir(base: str, seed: int) -> str:
+    return base if seed == 0 else f"{base}/seed{seed}"
+
+
+def eval_dir(seed: int) -> str:
+    return f"{DATA}/eval/seed{seed}"
+
+
+def out_name(stem: str, ckpt: str) -> str:
+    return f"{stem}.npz" if ckpt == "last" else f"{stem}_{ckpt}.npz"
 
 
 def build_snn():
@@ -132,7 +159,7 @@ def corrupt(frame, kind, sev, gen):
 
 
 @app.function(image=image, gpu="A10G", volumes={DATA: vol}, timeout=3600)
-def run(T: int = 16, batch: int = 16):
+def run(T: int = 16, batch: int = 16, seed: int = 0, ckpt: str = "last"):
     import os
 
     import numpy as np
@@ -141,6 +168,7 @@ def run(T: int = 16, batch: int = 16):
     from spikingjelly.datasets.dvs128_gesture import DVS128Gesture
     from torch.utils.data import DataLoader
 
+    assert ckpt in ("last", "best"), ckpt
     device = "cuda"
     ds = DVS128Gesture(ROOT, train=False, data_type="frame",
                        frames_number=T, split_by="number")
@@ -148,13 +176,16 @@ def run(T: int = 16, batch: int = 16):
 
     snn = build_snn().to(device)
     functional.set_step_mode(snn, "m")
-    snn.load_state_dict(torch.load(f"{DATA}/checkpoints/best.pt",
-                                   map_location=device)["net"])
+    ck = torch.load(f"{ckpt_dir(CKPT_SNN, seed)}/{ckpt}.pt", map_location=device)
+    snn.load_state_dict(ck["net"])
+    snn_epoch = int(ck["epoch"])
     snn.eval()
     ann = build_ann().to(device)
-    ann.load_state_dict(torch.load(f"{DATA}/checkpoints_ann/best.pt",
-                                   map_location=device)["net"])
+    ck = torch.load(f"{ckpt_dir(CKPT_ANN, seed)}/{ckpt}.pt", map_location=device)
+    ann.load_state_dict(ck["net"])
+    ann_epoch = int(ck["epoch"])
     ann.eval()
+    print(f"seed {seed}, {ckpt}.pt: SNN epoch {snn_epoch}, ANN epoch {ann_epoch}")
 
     def snn_fwd(f):
         out = snn(f.transpose(0, 1)).mean(0)
@@ -193,17 +224,19 @@ def run(T: int = 16, batch: int = 16):
                 acc = (results[key].argmax(1) == labels).mean()
                 print(f"{key:<22} sev={sev}  acc={acc:.4f}")
 
-    os.makedirs(f"{DATA}/eval", exist_ok=True)
-    np.savez(f"{DATA}/eval/corruption_outputs.npz",
+    os.makedirs(eval_dir(seed), exist_ok=True)
+    path = f"{eval_dir(seed)}/{out_name('corruption_outputs', ckpt)}"
+    np.savez(path,
              labels=labels_all,
              severities=np.array(
                  [f"{k}:{','.join(str(s) for s in v)}"
                   for k, v in SEVERITIES.items()]),
+             seed=seed, ckpt=ckpt, snn_epoch=snn_epoch, ann_epoch=ann_epoch,
              **results)
     vol.commit()
-    print("wrote /eval/corruption_outputs.npz")
+    print(f"wrote {path.replace(DATA, '')}")
 
 
 @app.local_entrypoint()
-def main():
-    run.remote()
+def main(seed: int = 0, ckpt: str = "last"):
+    run.remote(seed=seed, ckpt=ckpt)
