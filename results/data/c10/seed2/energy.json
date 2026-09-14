@@ -1,0 +1,126 @@
+{
+ "dataset": "cifar10dvs",
+ "seed": 2,
+ "ckpt": "last",
+ "snn_epoch": 63,
+ "ann_epoch": 63,
+ "T": 16,
+ "n": 1000,
+ "E_MAC_pJ": 4.6,
+ "E_AC_pJ": 0.9,
+ "layers": [
+  {
+   "layer": "conv1",
+   "macs_per_frame": 37748736,
+   "snn_in_density": null,
+   "ann_in_nonzero": null,
+   "snn_uJ": 2778.3069696000002,
+   "ann_dense_uJ": 2778.3069696000002,
+   "ann_sparse_uJ": 2778.3069696000002
+  },
+  {
+   "layer": "conv2",
+   "macs_per_frame": 603979776,
+   "snn_in_density": 0.04806481730937958,
+   "ann_in_nonzero": 0.7928911914825439,
+   "snn_uJ": 418.0345573248,
+   "ann_dense_uJ": 44452.911513600004,
+   "ann_sparse_uJ": 35246.3219748864
+  },
+  {
+   "layer": "conv3",
+   "macs_per_frame": 150994944,
+   "snn_in_density": 0.12619370222091675,
+   "ann_in_nonzero": 0.6752558536529542,
+   "snn_uJ": 274.3863984,
+   "ann_dense_uJ": 11113.227878400001,
+   "ann_sparse_uJ": 7504.272177868801
+  },
+  {
+   "layer": "conv4",
+   "macs_per_frame": 37748736,
+   "snn_in_density": 0.13842628288269043,
+   "ann_in_nonzero": 0.5441148471832276,
+   "snn_uJ": 75.24600779520001,
+   "ann_dense_uJ": 2778.3069696000002,
+   "ann_sparse_uJ": 1511.7180721919997
+  },
+  {
+   "layer": "conv5",
+   "macs_per_frame": 9437184,
+   "snn_in_density": 0.15775862121582032,
+   "ann_in_nonzero": 0.4947996673583984,
+   "snn_uJ": 21.438678758400005,
+   "ann_dense_uJ": 694.5767424000001,
+   "ann_sparse_uJ": 343.67634109439996
+  },
+  {
+   "layer": "fc1",
+   "macs_per_frame": 1048576,
+   "snn_in_density": 0.16544287109375,
+   "ann_in_nonzero": 0.3798954772949219,
+   "snn_uJ": 2.4981037056,
+   "ann_dense_uJ": 77.1751936,
+   "ann_sparse_uJ": 29.318507008
+  },
+  {
+   "layer": "fc2",
+   "macs_per_frame": 51200,
+   "snn_in_density": 0.121079345703125,
+   "ann_in_nonzero": 0.0442679443359375,
+   "snn_uJ": 0.08926938,
+   "ann_dense_uJ": 3.7683199999999997,
+   "ann_sparse_uJ": 0.16681577999999997
+  }
+ ],
+ "snn_mJ": 3.5699999849640003,
+ "ann_dense_mJ": 61.8982735872,
+ "ann_sparse_mJ": 47.4137808584296,
+ "ratio_dense": 17.338452058235564,
+ "ratio_sparse": 13.281171164740973,
+ "spiking_layers_ratio": 74.67536718183395,
+ "conv1_share_snn": 0.7782372496643069,
+ "lif_rates": [
+  0.016009064853191375,
+  0.04411085474491119,
+  0.045677798271179196,
+  0.049168397903442386,
+  0.05132341003417969,
+  0.121079345703125,
+  0.1011125
+ ],
+ "snn_pool_densities": [
+  0.04806481730937958,
+  0.12619370222091675,
+  0.13842628288269043,
+  0.15775862121582032,
+  0.16544287109375
+ ],
+ "ann_relu_nonzero": [
+  0.6072989834845066,
+  0.4813257485628128,
+  0.2971291184425354,
+  0.22559453201293944,
+  0.1397447509765625,
+  0.0442679443359375,
+  0.037631875
+ ],
+ "ann_pool_nonzero": [
+  0.7928911914825439,
+  0.6752558536529542,
+  0.5441148471832276,
+  0.4947996673583984,
+  0.3798954772949219
+ ],
+ "snn_activation_sparsity": 0.9768113593310008,
+ "ann_activation_sparsity": 0.43686002328938567,
+ "input_nonzero": 0.24771142959594727,
+ "input_mean_count": 0.3788223075866699,
+ "neurobench": {
+  "dense_ops": 13456146432,
+  "snn_effective_macs": 149612693.76,
+  "snn_effective_acs": 879658905.96,
+  "ann_effective_macs": 9852976582.635998,
+  "ann_effective_acs": 0.0
+ }
+}
