@@ -18,6 +18,7 @@ save-every-epoch and auto-resume behavior as step 3.
 Run (frames already prepared by step 3, so no prepare pass):
   modal run --detach scripts/step4_train_ann.py            # seed 0
   modal run --detach scripts/step4_train_ann.py --seed 1   # any other seed
+  (spawns and returns, like step 3; --wait streams the log instead)
 
 Seeds and checkpoints mirror step 3 exactly: seed 0 stays in
 /checkpoints_ann/, seed S > 0 goes to /checkpoints_ann/seedS/. best.pt is
@@ -187,5 +188,11 @@ def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 1
 
 
 @app.local_entrypoint()
-def main(epochs: int = 64, seed: int = 0):
-    train_remote.remote(epochs=epochs, seed=seed)
+def main(epochs: int = 64, seed: int = 0, wait: bool = False):
+    """Default: spawn and return (see step 3). --wait streams the log."""
+    if wait:
+        train_remote.remote(epochs=epochs, seed=seed)
+    else:
+        call = train_remote.spawn(epochs=epochs, seed=seed)
+        print(f"spawned ANN seed {seed}: function call {call.object_id}. "
+              f"Safe to close this window. Logs: modal dashboard.")

@@ -5,6 +5,8 @@ Reads, for every results/data/seed{S}/ that has a test_outputs.npz:
   corruption_outputs.npz    step 6 (optional but expected)
   energy.json               step 7 (optional)
   step3_metrics.csv, step4_metrics.csv   training curves (optional)
+  noise_sweep_outputs.npz   step 6b sweep (optional)
+  temperature_scaling.json  step 5b output, written by step5_temperature.py (optional)
 
 Reports three layers of uncertainty, kept separate on purpose:
   1. per seed: the bootstrap-over-samples CIs and McNemar test of step 5,
@@ -21,6 +23,8 @@ Usage (from the repo root):
     python scripts/step10_multiseed.py            # all results/data/seed*/
     python scripts/step10_multiseed.py --legacy   # dry run on the original
                                                   # single-seed best.pt dumps
+    python scripts/step10_multiseed.py --root results/data/c10 --tag _c10 --name CIFAR10-DVS
+                                                  # the second dataset (step 11)
 Writes results/data/multiseed_summary.json, results/data/multiseed_summary.md,
 results/figures/corruption_curves_multiseed.png and
 results/figures/accuracy_by_seed.png.
@@ -85,7 +89,7 @@ def read_metrics(path):
     return {k: [float(r[k]) for r in rows] for k in rows[0] if rows[0][k] != ""}
 
 
-def load_seed(d, legacy=False):
+def load_seed(d, legacy=False, default_root=True):
     """Everything this script needs from one seed directory."""
     if legacy:
         t = np.load("results/data/test_outputs.npz")
@@ -99,13 +103,18 @@ def load_seed(d, legacy=False):
         e_path = os.path.join(d, "energy.json")
         seed = int(t["seed"]) if "seed" in t.files else int(re.findall(r"seed(\d+)", d)[0])
         ckpt = str(t["ckpt"]) if "ckpt" in t.files else "?"
-        if seed == 0 and not os.path.exists(m3):        # seed 0 csvs may still sit at the top level
+        if default_root and seed == 0 and not os.path.exists(m3):   # seed 0 csvs may sit at the top level
             m3, m4 = "results/data/step3_metrics.csv", "results/data/step4_metrics.csv"
     rec = dict(seed=seed, ckpt=ckpt, labels=t["labels"],
                out={"snn": t["snn_out"], "ann": t["ann_out"]},
                corr=np.load(c_path) if os.path.exists(c_path) else None,
                energy=json.load(open(e_path)) if os.path.exists(e_path) else None,
                metrics={"snn": read_metrics(m3), "ann": read_metrics(m4)})
+    base = d if d else "results/data"
+    sw_path = os.path.join(base, "noise_sweep_outputs.npz")
+    ts_path = os.path.join(base, "temperature_scaling.json")
+    rec["sweep"] = np.load(sw_path) if os.path.exists(sw_path) else None
+    rec["ts"] = json.load(open(ts_path)) if os.path.exists(ts_path) else None
     return rec
 
 
@@ -194,24 +203,31 @@ def fmt_ci(ci, sign=False):
     return f"[{f.format(ci[0])}, {f.format(ci[1])}]"
 
 
+def opt(argv, flag, default):
+    return argv[argv.index(flag) + 1] if flag in argv else default
+
+
 def main(argv):
     legacy = "--legacy" in argv
+    root = opt(argv, "--root", "results/data")
+    tag_opt = opt(argv, "--tag", "")
+    name = opt(argv, "--name", "DVS128Gesture")
     if legacy:
         recs = [load_seed(None, legacy=True)]
         print("DRY RUN on the original single-seed best.pt dumps "
               "(results/data/*.npz). Not for the paper.\n")
     else:
-        dirs = sorted(d for d in glob.glob("results/data/seed*")
+        dirs = sorted(d for d in glob.glob(os.path.join(root, "seed*"))
                       if os.path.exists(os.path.join(d, "test_outputs.npz")))
         if not dirs:
-            sys.exit("no results/data/seed*/test_outputs.npz found "
+            sys.exit(f"no {root}/seed*/test_outputs.npz found "
                      "(fetch the step 5 dumps first, or use --legacy for a dry run)")
-        recs = [load_seed(d) for d in dirs]
+        recs = [load_seed(d, default_root=(root == "results/data")) for d in dirs]
     stats = [per_seed_stats(r) for r in recs]
     S = len(stats)
     n = stats[0]["n"]
     ckpts = sorted({s["ckpt"] for s in stats})
-    md = [f"# Matched pair over {S} seed{'s' if S != 1 else ''} "
+    md = [f"# Matched pair on {name} over {S} seed{'s' if S != 1 else ''} "
           f"(checkpoint: {', '.join(ckpts)}; n = {n} test samples)", ""]
 
     # ---------------- per-seed table ----------------
@@ -320,21 +336,160 @@ def main(argv):
         md.append("(* = hierarchical bootstrap CI excludes zero)")
         md.append("")
 
+    out_extra = {}
+
+    # ---------------- temporal shuffle: the SNN against its own clean ----------------
+    if have_corr:
+        md += ["## Temporal shuffle control: SNN accuracy under shuffle minus its own clean accuracy", "",
+               "The ANN is invariant by construction; the last column checks that its outputs are "
+               "identical at every window (1e-5).", "",
+               "| seed | w=2 | w=4 | w=8 | w=16 | ANN outputs identical |", "|---|---|---|---|---|---|"]
+        shuffle_pairs = []
+        for s, r in zip(stats, recs):
+            d = r["corr"]
+            sc = s["corr"][("tshuffle", 0)]["snn"]["corr"]
+            cells = []
+            for sev in range(1, 5):
+                ss = s["corr"][("tshuffle", sev)]["snn"]["corr"]
+                diff = ss.mean() - sc.mean()
+                lo, hi = boot_ci(lambda i, ss=ss, sc=sc: ss[i].mean() - sc[i].mean(), n)
+                star = "*" if (lo > 0 or hi < 0) else ""
+                cells.append(f"{diff:+.4f} {fmt_ci((lo, hi), True)}{star}")
+                if sev == 4:
+                    shuffle_pairs.append((ss, sc))
+            ann_same = all(np.allclose(d[f"ann_tshuffle_{sev}"], d["ann_clean_0"], atol=1e-5)
+                           for sev in range(1, 5))
+            md.append(f"| {s['seed']} | " + " | ".join(cells) + f" | {'yes' if ann_same else 'NO'} |")
+        hci = hier_boot(shuffle_pairs)
+        mean_shift = float(np.mean([a.mean() - b.mean() for a, b in shuffle_pairs]))
+        md += ["", f"Full shuffle (w=16): mean over seeds {mean_shift:+.4f}, hierarchical bootstrap CI "
+               f"{fmt_ci(hci, True)}.", ""]
+        out_extra["shuffle"] = dict(mean_full_shuffle=mean_shift, hier_ci=list(hci))
+
+    # ---------------- noise temporal-correlation sweep (step 6b) ----------------
+    have_sweep = all(r["sweep"] is not None for r in recs)
+    sweep_summary = {}
+    if have_sweep:
+        d0 = recs[0]["sweep"]
+        lams = [float(x) for x in d0["lams"]]
+        ks = [int(x) for x in d0["ks"]]
+        md += ["## Noise temporal-correlation sweep (step 6b)", "",
+               "Same Poisson marginal per frame; a noise field persists for k frames. k=1 is step 6's "
+               "noise, k=16 a static field. Paired SNN - ANN accuracy, mean over seeds, hierarchical "
+               "bootstrap CI. Shrinkage = diff(k=1) - diff(k=16); positive means the SNN advantage is "
+               "smaller for persistent noise, as the leak hypothesis predicts.", ""]
+        for i, lam in enumerate(lams, start=1):
+            md += [f"### lam = {lam}", "",
+                   "| k | SNN acc mean (range) | ANN acc mean (range) | SNN - ANN | hier. boot CI | seeds sig. | SNN conf-acc | ANN conf-acc |",
+                   "|---|---|---|---|---|---|---|---|"]
+            rows_k, pairs_by_k = [], {}
+            for k in ks:
+                pairs, sa, aa, gs, ga, nsig = [], [], [], [], [], 0
+                for r in recs:
+                    d, labels = r["sweep"], r["labels"]
+                    cs, ps = confidences(d[f"snn_lam{i}_k{k}"])
+                    ca, pa = confidences(d[f"ann_lam{i}_k{k}"])
+                    s_c, a_c = (ps == labels).astype(float), (pa == labels).astype(float)
+                    pairs.append((s_c, a_c))
+                    sa.append(s_c.mean())
+                    aa.append(a_c.mean())
+                    gs.append(cs.mean() - s_c.mean())
+                    ga.append(ca.mean() - a_c.mean())
+                    lo, hi = boot_ci(lambda idx, s_c=s_c, a_c=a_c: s_c[idx].mean() - a_c[idx].mean(), n)
+                    nsig += int(lo > 0 or hi < 0)
+                pairs_by_k[k] = pairs
+                hci = hier_boot(pairs)
+                dm = float(np.mean([p[0].mean() - p[1].mean() for p in pairs]))
+                rec = dict(k=k, snn_acc=summarize(sa), ann_acc=summarize(aa), diff_mean=dm,
+                           diff_hier_ci=list(hci), seeds_significant=nsig,
+                           snn_gap=float(np.mean(gs)), ann_gap=float(np.mean(ga)))
+                rows_k.append(rec)
+                star = "*" if (hci[0] > 0 or hci[1] < 0) else ""
+                md.append(f"| {k} | {rec['snn_acc']['mean']:.3f} ({rec['snn_acc']['min']:.3f}-{rec['snn_acc']['max']:.3f}) "
+                          f"| {rec['ann_acc']['mean']:.3f} ({rec['ann_acc']['min']:.3f}-{rec['ann_acc']['max']:.3f}) "
+                          f"| {dm:+.3f} | {fmt_ci(hci, True)}{star} | {nsig}/{S} "
+                          f"| {rec['snn_gap']:+.3f} | {rec['ann_gap']:+.3f} |")
+            p1, pK = pairs_by_k[ks[0]], pairs_by_k[ks[-1]]
+            shr = [(p1[j][0].mean() - p1[j][1].mean()) - (pK[j][0].mean() - pK[j][1].mean())
+                   for j in range(S)]
+            vals = []
+            for _ in range(N_HBOOT):
+                seeds_r = RNG.integers(0, S, S)
+                idx = RNG.integers(0, n, n)
+                vals.append(np.mean([(p1[j][0][idx].mean() - p1[j][1][idx].mean())
+                                     - (pK[j][0][idx].mean() - pK[j][1][idx].mean()) for j in seeds_r]))
+            sci = (float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5)))
+            star = "*" if (sci[0] > 0 or sci[1] < 0) else ""
+            md += ["", f"Shrinkage diff(k={ks[0]}) - diff(k={ks[-1]}): mean {np.mean(shr):+.3f}, per seed "
+                   f"{', '.join(f'{v:+.3f}' for v in shr)}, hierarchical CI {fmt_ci(sci, True)}{star}", ""]
+            sweep_summary[str(lam)] = dict(rows=rows_k, shrink_mean=float(np.mean(shr)),
+                                           shrink_per_seed=[float(v) for v in shr],
+                                           shrink_hier_ci=list(sci))
+        out_extra["noise_sweep"] = sweep_summary
+
+    # ---------------- temperature scaling (step 5b) ----------------
+    have_ts = all(r["ts"] is not None for r in recs)
+    if have_ts:
+        md += ["## Temperature scaling (step 5b, two-fold cross-fit on the test set)", "",
+               "| model | fitted T (mean, range over folds and seeds) | clean ECE native | clean ECE after TS | clean conf-acc native | after TS |",
+               "|---|---|---|---|---|---|"]
+        ts_summary = {}
+        for m in ("snn", "ann"):
+            Ts = [v for r in recs for v in r["ts"]["clean"][m]["fitted_T"].values()]
+            en = summarize([r["ts"]["clean"][m]["norm"]["ece"] for r in recs])
+            et = summarize([r["ts"]["clean"][m]["ts"]["ece"] for r in recs])
+            gn = summarize([r["ts"]["clean"][m]["norm"]["gap"] for r in recs])
+            gt = summarize([r["ts"]["clean"][m]["ts"]["gap"] for r in recs])
+            md.append(f"| {m.upper()} | {np.mean(Ts):.3f} ({min(Ts):.3f}-{max(Ts):.3f}) "
+                      f"| {en['mean']:.4f} (SD {en['sd']:.4f}) | {et['mean']:.4f} (SD {et['sd']:.4f}) "
+                      f"| {gn['mean']:+.4f} | {gt['mean']:+.4f} |")
+            ts_summary[m] = dict(fitted_T_mean=float(np.mean(Ts)), fitted_T_min=float(min(Ts)),
+                                 fitted_T_max=float(max(Ts)), clean_ece_native=en, clean_ece_ts=et,
+                                 clean_gap_native=gn, clean_gap_ts=gt)
+        ci_after = [r["ts"]["clean"]["ann_minus_snn_ece_ts_ci"] for r in recs]
+        n_excl = sum(1 for lo, hi in ci_after if lo > 0 or hi < 0)
+        md += ["", f"ANN - SNN ECE difference after TS excludes zero in {n_excl} of {S} seeds.", "",
+               "Under noise: temperatures fitted on clean data (the deployment case) and refitted per "
+               "condition (oracle). Mean over seeds.", "",
+               "| noise | model | acc | conf-acc native | conf-acc TS-clean | conf-acc TS-oracle | ECE native | ECE TS-clean | ECE TS-oracle |",
+               "|---|---|---|---|---|---|---|---|---|"]
+        noise_rows = []
+        sevs = recs[0]["ts"]["corruption"]["noise"]["severities"]
+        for j, sev in enumerate(sevs):
+            for m in ("snn", "ann"):
+                rs = [r["ts"]["corruption"]["noise"][m][j] for r in recs]
+                row = dict(sev=sev, model=m, acc=float(np.mean([x["acc"] for x in rs])),
+                           gap_native=float(np.mean([x["norm"]["gap"] for x in rs])),
+                           gap_ts_clean=float(np.mean([x["ts_clean"]["gap"] for x in rs])),
+                           gap_ts_oracle=float(np.mean([x["ts_oracle"]["gap"] for x in rs])),
+                           ece_native=float(np.mean([x["norm"]["ece"] for x in rs])),
+                           ece_ts_clean=float(np.mean([x["ts_clean"]["ece"] for x in rs])),
+                           ece_ts_oracle=float(np.mean([x["ts_oracle"]["ece"] for x in rs])))
+                noise_rows.append(row)
+                md.append(f"| {sev} | {m.upper()} | {row['acc']:.3f} | {row['gap_native']:+.3f} "
+                          f"| {row['gap_ts_clean']:+.3f} | {row['gap_ts_oracle']:+.3f} | {row['ece_native']:.3f} "
+                          f"| {row['ece_ts_clean']:.3f} | {row['ece_ts_oracle']:.3f} |")
+        md.append("")
+        out_extra["temperature_scaling"] = dict(clean=ts_summary, noise=noise_rows,
+                                                ann_minus_snn_ece_ts_ci_excludes_zero=n_excl)
+
     # ---------------- console + files ----------------
     text = "\n".join(md)
     print(text)
     os.makedirs("results/data", exist_ok=True)
     os.makedirs("results/figures", exist_ok=True)
-    tag = "_legacy" if legacy else ""
-    with open(f"results/data/multiseed_summary{tag}.md", "w", encoding="utf-8") as f:
+    tag = "_legacy" if legacy else tag_opt
+    out_root = "results/data" if legacy else root
+    os.makedirs(out_root, exist_ok=True)
+    with open(f"{out_root}/multiseed_summary{tag}.md", "w", encoding="utf-8") as f:
         f.write(text + "\n")
     out = dict(n_seeds=S, seeds=[s["seed"] for s in stats], ckpts=ckpts, n=n,
                per_seed=[{k: v for k, v in s.items() if k not in ("corr", "sev_labels")}
                          for s in stats],
-               across_seeds=agg, corruption=corr_summary)
-    with open(f"results/data/multiseed_summary{tag}.json", "w") as f:
+               across_seeds=agg, corruption=corr_summary, **out_extra)
+    with open(f"{out_root}/multiseed_summary{tag}.json", "w") as f:
         json.dump(out, f, indent=1, default=float)
-    print(f"\nwrote results/data/multiseed_summary{tag}.md and .json")
+    print(f"\nwrote {out_root}/multiseed_summary{tag}.md and .json")
 
     # figure 1: accuracy by seed
     fig, ax = plt.subplots(figsize=(6.5, 3.8))
@@ -348,10 +503,11 @@ def main(argv):
         ax.axhline(np.mean(v), color=col, lw=1, ls=":", alpha=0.7)
     ax.set_xticks(xs, [f"seed {s['seed']}" for s in stats])
     ax.set_ylabel("test accuracy")
-    ax.set_ylim(0.8, 1.0)
+    lo_all = min(s[f"{m}_acc_ci"][0] for s in stats for m in ("snn", "ann"))
+    ax.set_ylim(max(0.0, lo_all - 0.05), 1.0)
     ax.legend(loc="lower right", fontsize=8)
-    ax.set_title(f"Clean accuracy per seed, {', '.join(ckpts)} (bars = bootstrap 95% CI, n={n})",
-                 fontsize=9)
+    ax.set_title(f"Clean accuracy per seed on {name}, {', '.join(ckpts)} "
+                 f"(bars = bootstrap 95% CI, n={n})", fontsize=9)
     fig.tight_layout()
     fig.savefig(f"results/figures/accuracy_by_seed{tag}.png", dpi=150)
     print(f"wrote results/figures/accuracy_by_seed{tag}.png")
@@ -369,25 +525,59 @@ def main(argv):
                     axes[0, j].plot(x, row, color=colors[m], lw=0.8, alpha=0.35)
                 axes[0, j].plot(x, per_seed.mean(0), color=colors[m], lw=2.2, marker="o",
                                 label=f"{m.upper()} mean of {S}")
-            recs = corr_summary[cname]
-            dm = [r["diff_mean"] for r in recs]
-            lo = [r["diff_mean"] - r["diff_hier_ci"][0] for r in recs]
-            hi = [r["diff_hier_ci"][1] - r["diff_mean"] for r in recs]
+            crows = corr_summary[cname]
+            dm = [r["diff_mean"] for r in crows]
+            lo = [r["diff_mean"] - r["diff_hier_ci"][0] for r in crows]
+            hi = [r["diff_hier_ci"][1] - r["diff_mean"] for r in crows]
             axes[1, j].errorbar(x, dm, yerr=[lo, hi], marker="o", capsize=3, color="tab:green")
             axes[1, j].axhline(0, color="gray", lw=1, ls="--")
             axes[0, j].set_title(cname)
-            axes[0, j].set_ylim(0.3, 1.0)
-            axes[1, j].set_ylim(-0.2, 0.45)
+            axes[0, j].set_ylim(0.0, 1.0)
+            axes[1, j].set_ylim(-0.25, 0.45)
             axes[1, j].set_xticks(x, ["clean"] + sev_labels[cname])
             axes[1, j].set_xlabel("severity")
         axes[0, 0].set_ylabel("accuracy (thin = seeds)")
         axes[1, 0].set_ylabel("SNN - ANN, paired (hier. boot 95% CI)")
         axes[0, 0].legend(fontsize=8)
         fig.suptitle(f"SNN vs ANN under corruption over {S} seed{'s' if S != 1 else ''}, "
-                     f"{', '.join(ckpts)}, DVS128Gesture test (n={n})")
+                     f"{', '.join(ckpts)}, {name} test (n={n})")
         fig.tight_layout()
         fig.savefig(f"results/figures/corruption_curves_multiseed{tag}.png", dpi=150)
         print(f"wrote results/figures/corruption_curves_multiseed{tag}.png")
+
+    # figure 3: noise temporal-correlation sweep over seeds
+    if have_sweep:
+        fig, axes = plt.subplots(2, len(lams), figsize=(3.6 * len(lams), 6.2), sharex=True)
+        x = np.arange(len(ks))
+        for j, lam in enumerate(lams):
+            rows_k = sweep_summary[str(lam)]["rows"]
+            ymin = 1.0
+            for m, col in (("snn", "tab:blue"), ("ann", "tab:orange")):
+                per_seed = np.array([[(confidences(r["sweep"][f"{m}_lam{j + 1}_k{k}"])[1]
+                                       == r["labels"]).mean() for k in ks] for r in recs])
+                ymin = min(ymin, float(per_seed.min()))
+                for row in per_seed:
+                    axes[0, j].plot(x, row, color=col, lw=0.8, alpha=0.35)
+                axes[0, j].plot(x, per_seed.mean(0), color=col, lw=2.2, marker="o",
+                                label=f"{m.upper()} mean of {S}")
+            dm = [r["diff_mean"] for r in rows_k]
+            lo = [r["diff_mean"] - r["diff_hier_ci"][0] for r in rows_k]
+            hi = [r["diff_hier_ci"][1] - r["diff_mean"] for r in rows_k]
+            axes[1, j].errorbar(x, dm, yerr=[lo, hi], marker="o", capsize=3, color="tab:green")
+            axes[1, j].axhline(0, color="gray", lw=1, ls="--")
+            axes[0, j].set_title(f"noise rate lam = {lam}")
+            axes[0, j].set_ylim(max(0.0, min(0.3, ymin - 0.05)), 1.0)
+            axes[1, j].set_ylim(-0.45, 0.35)
+            axes[1, j].set_xticks(x, [str(k) for k in ks])
+            axes[1, j].set_xlabel("k = frames a noise field persists")
+        axes[0, 0].set_ylabel("accuracy (thin = seeds)")
+        axes[1, 0].set_ylabel("SNN - ANN, paired (hier. boot 95% CI)")
+        axes[0, 0].legend(fontsize=8, loc="lower left")
+        fig.suptitle(f"Noise temporal-correlation sweep on {name} over {S} seeds, "
+                     f"{', '.join(ckpts)} (k=1: fresh field per frame; k=16: static field)")
+        fig.tight_layout()
+        fig.savefig(f"results/figures/noise_correlation_sweep_multiseed{tag}.png", dpi=150)
+        print(f"wrote results/figures/noise_correlation_sweep_multiseed{tag}.png")
 
 
 if __name__ == "__main__":

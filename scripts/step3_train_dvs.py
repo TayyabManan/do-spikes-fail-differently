@@ -19,6 +19,9 @@ Then (from the repo root):
   modal run scripts/step3_train_dvs.py --mode prepare   # CPU, once, ~30-60 min
   modal run --detach scripts/step3_train_dvs.py         # GPU, resumable, seed 0
   modal run --detach scripts/step3_train_dvs.py --seed 1   # any other seed
+  (the entrypoint spawns the call and returns; the detached app keeps
+  training. Add --wait to stream the log, but then closing the window
+  cancels the run. Always use python -m modal on this machine.)
 
 Seeds and checkpoints:
   seed 0 keeps the original layout: /checkpoints/{last,best}.pt, metrics.csv.
@@ -211,8 +214,17 @@ def train_remote(epochs: int = 64, batch: int = 16, lr: float = 1e-3, T: int = 1
 
 
 @app.local_entrypoint()
-def main(mode: str = "train", epochs: int = 64, seed: int = 0):
+def main(mode: str = "train", epochs: int = 64, seed: int = 0,
+         wait: bool = False):
+    """Default: spawn the training call and return. Under `modal run --detach`
+    the app stays alive and the container runs to completion on its own;
+    closing the window cannot cancel it. Watch progress in the dashboard.
+    --wait streams the log instead (the run then dies with the window)."""
     if mode == "prepare":
         prepare.remote()
-    else:
+    elif wait:
         train_remote.remote(epochs=epochs, seed=seed)
+    else:
+        call = train_remote.spawn(epochs=epochs, seed=seed)
+        print(f"spawned SNN seed {seed}: function call {call.object_id}. "
+              f"Safe to close this window. Logs: modal dashboard.")

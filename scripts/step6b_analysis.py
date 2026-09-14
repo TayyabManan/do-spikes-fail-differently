@@ -137,7 +137,7 @@ def main(path, fig_path=None):
         axes[2, j].axhline(0, color="gray", lw=1, ls="--")
         axes[0, j].set_title(f"noise rate lam = {lam}")
         axes[0, j].set_ylim(0, 1.0)
-        axes[1, j].set_ylim(-0.2, 0.5)
+        axes[1, j].set_ylim(-0.45, 0.35)
         axes[2, j].set_ylim(-0.15, 0.6)
         axes[2, j].set_xticks(x, [str(k) for k in ks])
         axes[2, j].set_xlabel("k = frames a noise field persists")
