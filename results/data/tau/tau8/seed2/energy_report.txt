@@ -1,0 +1,3 @@
+tau 8.0 seed 2, last.pt: SNN 3.00 mJ, ANN dense 61.90 mJ (20.7x), ANN sparse 50.52 mJ (16.9x)
+mean LIF firing rates, layer order: 0.005 0.007 0.008 0.013 0.042 0.304 0.074
+activation sparsity: SNN 99.4% silent, ANN 31.3% zero
