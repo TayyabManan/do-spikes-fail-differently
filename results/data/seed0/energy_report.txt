@@ -1,0 +1,28 @@
+seed 0, last.pt (SNN epoch 63, ANN epoch 63), T=16, n=288
+layer       MACs/frame   SNN in   ANN in    SNN uJ  ANN dense  ANN sparse
+conv1       37,748,736   analog   analog  2778.307   2778.307    2778.307
+conv2      603,979,776   0.0439   0.7889   381.610  44452.912   35068.600
+conv3      150,994,944   0.0463   0.7336   100.574  11113.228    8152.732
+conv4       37,748,736   0.0641   0.6759    34.832   2778.307    1877.923
+conv5        9,437,184   0.1040   0.6959    14.127    694.577     483.321
+fc1          1,048,576   0.2110   0.7252     3.186     77.175      55.969
+fc2             56,320   0.3333   0.1453     0.270      4.145       0.602
+------------------------------------------------------------------------
+TOTAL                                     3312.905  61898.650   48417.455
+
+ANN dense / SNN:  18.7x saving (the usual literature accounting)
+ANN sparse / SNN: 14.6x saving (zero-skipping ANN, same treatment for both)
+spiking layers only (conv1 excluded from both): 534.6 uJ vs 59120.3 uJ dense, 111x
+conv1 share of the SNN bill: 83.9%
+mean LIF firing rates, layer order: 0.019 0.021 0.025 0.036 0.074 0.333 0.090
+post-pool spike densities, pool order: 0.044 0.046 0.064 0.104 0.211
+ANN ReLU nonzero fractions, layer order: 0.678 0.597 0.507 0.479 0.436 0.145 0.025
+ANN post-pool nonzero fractions, pool order: 0.789 0.734 0.676 0.696 0.725
+activation sparsity: SNN 98.0% of neuron-timesteps silent, ANN 34.8% of ReLU outputs zero (both weighted per neuron-timestep)
+input frame: nonzero fraction 0.1840, mean count 0.7829
+
+NeuroBench-style counts per inference (first layer at nonzero-input fraction for both):
+  Dense synaptic ops   13,456,228,352
+  SNN Effective_MACs   111,138,300   Effective_ACs 593,997,899
+  ANN Effective_MACs   10,032,692,139   Effective_ACs 0
+note: pJ table bills conv1 at full MAC cost for both models (conservative); E_MAC=4.6pJ E_AC=0.9pJ (Horowitz 2014, 45nm); accounting model, not measured power
