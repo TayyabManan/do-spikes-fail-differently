@@ -8,3 +8,11 @@ results/data/demo_bank.npz
 
 # local secrets, if any ever appear here
 .env*
+
+# paper: local latexmk output
+paper/build/
+
+# private
+paper/
+scripts/step13_paper_assets.py
+scripts/step13_check_tex.py
